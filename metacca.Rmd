@@ -1,0 +1,298 @@
+---
+title: Testing metaCCA estimation of phenotypic correlation
+author: Gibran Hemani
+date: 16/09/2016
+output: html_document
+---
+
+## Introduction
+
+Phenotypic correlation between two traits is a function of the shared genetic effects and shared environmental effects. For example suppose two traits are influenced by a single SNP, and the effect size of the SNP is the same on both traits. The genetic correlation is 1. If they also share the same environmental factors, but the effect of the factor on the first trait is positive, and the effect on the second trait is negative, the environmental correlation is -1. The phenotypic correlation of these two traits would be 0 (assuming equal variance of genetic and environmental factors).
+
+These simulations just show that the metaCCA method of estimating phenotypic correlations are actually only estimating the genetic correlations. It also compares the estimate using a single sample or two samples.
+
+From the perspective of metaCCA, whose objective is to estimate the joint effects of a SNP on correlated outcomes, it doesn't matter that it is estimating the genetic correlation and calling it the phenotypic correlation. This is because the joint effect of a SNP on correlated phenotypes has almost no dependence on the shared environmental effects (this likely just contributes to residual variance in the model). It is largely predicated on the shared genetic effects, which is precisely what it is calculating.
+
+
+## MetaCCA
+
+The metaCCA method of estimating 'phenotypic' correlation between traits 1 and 2 is:
+
+$$
+\sigma_{YY}(1,2) = \frac{\sum (\beta_1 - \mu_1)(\beta_2 - \mu_2)} {\sqrt{\sum{(\beta_1 - \mu_1)^2}}\sqrt{\sum{(\beta_2 - \mu_2)^2}}}
+$$
+
+Note that this can basically be simplified to:
+
+$$
+\frac{cov(\beta_1, \beta_2)} {sd(\beta_1)sd(\beta_2)}
+$$
+
+This is simply the formula for the correlation between $\beta_1$ and $\beta_2$, i.e. the estimated genetic correlation. It can be obtained from the following function:
+
+```{r }
+metacca_yy <- function(bhat1, bhat2)
+{
+	sum((bhat1 - mean(bhat1)) * (bhat2 - mean(bhat2))) / (sqrt(sum((bhat1 - mean(bhat1))^2)) * sqrt(sum((bhat2 - mean(bhat2))^2)))
+}
+```
+
+Indeed, this formula is identical to the calculation for correlations:
+
+```{r }
+a <- rnorm(100)
+b <- rnorm(100) + a
+cor(a, b)
+metacca_yy(a, b)
+```
+
+
+## Simulations
+
+Two questions:
+
+1. Do non-genetic correlations influence the metaCCA method of calculating what it calls 'phenotypic' correlation, labelled $\sigma_YY$ in the paper?
+2. If not, can we use these genetic correlations in a two-sample setting.
+
+- Two traits
+- Same SNPs have effects
+- Effects are 50% correlated
+- Simulate the phenotypes for two independent samples
+
+Sample parameters:
+
+```{r }
+# First sample size
+nidA <- 10000 
+
+# Second sample size
+nidB <- 10000
+
+# Number of genetic factors
+nsnp <- 100
+
+# Number of environmental factors
+nenv <- 100
+```
+
+Simulate the SNPs and environmental factors for each sample
+
+```{r }
+e1 <- scale(matrix(rnorm(nenv * nidA), nidA, nenv))
+g1 <- scale(matrix(rbinom(nsnp * nidA, 2, 0.5), nidA, nsnp))
+e2 <- scale(matrix(rnorm(nenv * nidB), nidB, nenv))
+g2 <- scale(matrix(rbinom(nsnp * nidB, 2, 0.5), nidB, nsnp))
+```
+
+Note that the genotypes are all scaled to have mean 0 and variance 1. Same for the environmental factors.
+
+Specify the genetic correlation
+
+```{r }
+rg <- sqrt(0.5)
+```
+
+Specify the environmental correlation
+
+```{r }
+re <- - sqrt(0.5)
+```
+
+Generate genetic and environmental effects for each trait. The effects on each trait need to be correlated based on `rg` and `re`.
+
+```{r }
+library(mvtnorm)
+eff_g <- rmvnorm(nsnp, c(0,0), sigma=matrix(c(1, rg, rg, 1), 2))
+eff_e <- rmvnorm(nenv, c(0,0), sigma=matrix(c(1, re, re, 1), 2))
+```
+
+e.g. The genetic effects on trait 1 (`eff_g[,1]`) and genetic effects on trait 2 (`eff_g[,2]`) are correlated:
+
+```{r }
+cor(eff_g[,1], eff_g[,2])
+cor(eff_e[,1], eff_e[,2])
+```
+
+The phenotype can now be simulated simply as
+
+$$
+\mathbf{y} = \textbf{G}\textbf{b}_{g} + \textbf{E}\textbf{b}_{e}
+$$
+
+where $G$ is the scaled genotype matrix, $E$ is the scaled environmental factor matrix, and $b_{g}$ and $b_{e}$ are the corresponding effects for SNPs and environment.
+
+We can simulate phenotypes for traits 1 and 2, in each of the two samples.
+
+```{r }
+y1_sampleA <- scale(g1 %*% eff_g[,1] + e1 %*% eff_e[,1])
+y1_sampleB <- scale(g2 %*% eff_g[,1] + e2 %*% eff_e[,1])
+y2_sampleA <- scale(g1 %*% eff_g[,2] + e1 %*% eff_e[,2])
+y2_sampleB <- scale(g2 %*% eff_g[,2] + e2 %*% eff_e[,2])
+```
+
+The phenotypic correlations can now be calculated within each sample. Sample 1:
+
+```{r }
+cor(y1_sampleA, y2_sampleA)
+```
+
+Sample 2:
+
+```{r }
+cor(y1_sampleB, y2_sampleB)
+```
+
+We need to obtain GWAS effect sizes to be able to perform this calculation
+
+```{r }
+gwas <- function(g, y)
+{
+	b <- array(ncol(g))
+	for(i in 1:ncol(g))
+	{
+		b[i] <- cov(g[,i], y) / var(g[,i])
+	}
+	return(b)
+}
+
+bhat1_sampleA <- gwas(g1, y1_sampleA)
+bhat2_sampleA <- gwas(g1, y2_sampleA)
+bhat1_sampleB <- gwas(g2, y1_sampleB)
+bhat2_sampleB <- gwas(g2, y2_sampleB)
+```
+
+We can now estimate the metaCCA based estimate of 
+
+```{r }
+metacca_yy(bhat1_sampleA, bhat2_sampleA)
+metacca_yy(bhat1_sampleB, bhat2_sampleA)
+metacca_yy(bhat1_sampleA, bhat2_sampleB)
+metacca_yy(bhat1_sampleB, bhat2_sampleB)
+```
+
+Note that these are close to the simulated genetic correlation `r rg`, not the phenotypic correlation `cor(y1_sampleA, y2_sampleA) = `, `r cor(y1_sampleA, y2_sampleA)`. Indeed, they are identical to the simple correlation between the $\hat{\beta}$ estimates:
+
+```{r }
+cor(bhat1_sampleA, bhat2_sampleA)
+cor(bhat1_sampleB, bhat2_sampleA)
+cor(bhat1_sampleA, bhat2_sampleB)
+cor(bhat1_sampleB, bhat2_sampleB)
+```
+
+
+## Further simulations
+
+Set different parameters:
+
+```{r }
+param <- expand.grid(
+	nsim = 1:30,
+	rg = c(-0.5, -0.25, 0.25, 0.5),
+	re = c(-0.5, -0.25, 0.25, 0.5),
+	nidA = c(1000, 5000),
+	nidB = c(1000, 5000),
+	nsnp = 100,
+	nenv = 100
+)
+```
+
+Perform simulations. We will calculate $\sigma_YY$ between traits 1 and 2 in the one-sample and two-sample cases. 
+
+
+```{r echo=FALSE, eval=FALSE}
+
+sim <- function(param, i)
+{
+	nenv <- param$nenv[i]
+	nsnp <- param$nsnp[i]
+	nidA <- param$nidA[i]
+	nidB <- param$nidB[i]
+	rg <- param$rg[i]
+	re <- param$re[i]
+
+	e1 <- scale(matrix(rnorm(nenv * nidA), nidA, nenv))
+	g1 <- scale(matrix(rbinom(nsnp * nidA, 2, 0.5), nidA, nsnp))
+	e2 <- scale(matrix(rnorm(nenv * nidB), nidB, nenv))
+	g2 <- scale(matrix(rbinom(nsnp * nidB, 2, 0.5), nidB, nsnp))
+	eff_g <- rmvnorm(nsnp, c(0,0), sigma=matrix(c(1, rg, rg, 1), 2))
+	eff_e <- rmvnorm(nenv, c(0,0), sigma=matrix(c(1, re, re, 1), 2))
+	y1_sampleA <- scale(g1 %*% eff_g[,1] + e1 %*% eff_e[,1])
+	y1_sampleB <- scale(g2 %*% eff_g[,1] + e2 %*% eff_e[,1])
+	y2_sampleA <- scale(g1 %*% eff_g[,2] + e1 %*% eff_e[,2])
+	y2_sampleB <- scale(g2 %*% eff_g[,2] + e2 %*% eff_e[,2])
+	bhat1_sampleA <- gwas(g1, y1_sampleA)
+	bhat2_sampleA <- gwas(g1, y2_sampleA)
+	bhat1_sampleB <- gwas(g2, y1_sampleB)
+	bhat2_sampleB <- gwas(g2, y2_sampleB)
+
+	param$yyAA[i] = metacca_yy(bhat1_sampleA, bhat2_sampleA)
+	param$yyAB[i] = metacca_yy(bhat1_sampleA, bhat2_sampleB)
+	param$yyBA[i] = metacca_yy(bhat1_sampleB, bhat2_sampleA)
+	param$yyBB[i] = metacca_yy(bhat1_sampleB, bhat2_sampleB)
+	param$rA[i] = cor(y1_sampleA, y2_sampleA)
+	param$rB[i] = cor(y1_sampleB, y2_sampleB)
+
+	return(param)
+}
+
+for(i in 1:nrow(param))
+{
+	message(i)
+	param <- sim(param, i)
+}
+save(param, file="param.RData")
+```
+
+```{r echo=FALSE, eval=TRUE}
+
+load("param.RData")
+library(reshape2)
+library(dplyr)
+res_s <- param %>% dplyr::group_by(rg, re, nidA, nidB, nsnp, nenv) %>%
+	dplyr::summarise(
+		n = n(),
+		yyAA = mean(yyAA),
+		yyAB = mean(yyAB),
+		yyBA = mean(yyBA),
+		yyBB = mean(yyBB),
+		rA = mean(rA),
+		rB = mean(rB)
+	)
+
+res_sl <- melt(res_s, id.vars = c("rg", "re", "nidA", "nidB", "nsnp", "nenv"), measure.vars=c("yyAA", "yyAB", "yyBA", "yyBB", "rA", "rB"))
+```
+
+The phenotypic correlations are calculated within samples A and B (between sample phenotypic correlations can't be calculated):
+
+- `rA` = Phenotypic correlation between traits 1 and 2 in sample A
+- `rB` = Phenotypic correlation between traits 1 and 2 in sample B
+
+And the metaCCA results are calculated as so:
+
+- `yyAA` =  Where traits 1 and 2 are measured in one sample (A)
+- `yyBB` = Where traits 1 and 2 are measured in one sample (B)
+- `yyAB` = Where trait 1 is measured in sample A and trait 2 is measured in sample B
+- `yyBA` = Where trait 1 is measured in sample B and trait 2 is measured in sample A
+
+The latter two scenarios represent the two sample case. Simulations were performed `r max(param$nsim)` times for each parameter, and the average correlations from the `r max(param$nsim)` runs were taken.
+
+
+```{r echo=FALSE, fig.height=10}
+library(ggplot2)
+res_sl$lab1 <- paste0("rg = ", res_sl$rg)
+res_sl$lab2 <- paste0("re = ", res_sl$re)
+res_sl$lab3 <- paste0("A = ", res_sl$nidA, "; B = ", res_sl$nidB)
+ggplot(res_sl, aes(x=lab3, y=value)) +
+geom_bar(stat="identity", position="dodge", aes(fill=variable)) +
+facet_grid(lab1 ~ lab2) +
+scale_fill_brewer(type="qual") +
+theme(axis.text.x=element_text(angle=90, hjust = 1, vjust=0.5)) +
+labs(x = "Sample sizes", y = "Estimate")
+```
+
+The y-axis shows the estimated values for the estimated metaCCA correlations for the different sample configurations (first 4 bar colours) or the estimated phenotypic correlations (last 2 bar colours).
+
+What this result shows is that
+
+- The metaCCA result is a function of the simulated genetic correlation and unrelated to the non-genetic correlation (it is not the phenotypic correlation)
+- The metaCCA result is largely the same for between and within samples, but there is slight underestimation for between samples vs within sample estimates.
